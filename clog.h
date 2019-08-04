@@ -84,7 +84,8 @@
 #define CLOG_DATETIME_LENGTH 256
 
 /* Default format strings. */
-#define CLOG_DEFAULT_FORMAT "%d %t %f(%n): %l: %m\n"
+// was: #define CLOG_DEFAULT_FORMAT "%d %t %f(%n): %l: %m\n"
+#define CLOG_DEFAULT_FORMAT "(%L) %d %t %f:%j(%n): %s %l: %m"
 #define CLOG_DEFAULT_DATE_FORMAT "%Y-%m-%d"
 #define CLOG_DEFAULT_TIME_FORMAT "%H:%M:%S"
 
@@ -139,7 +140,17 @@ int clog_init_fd(int id, int fd);
  */
 void clog_free(int id);
 
-#define CLOG(id) __FILE__, __LINE__, id
+// #define CLOG(id) __FILE__, __LINE__, id
+
+#define clog_debug_to(x,...) clog_debug_f(__FILE__, __FUNCTION__, __LINE__,x,__VA_ARGS__)
+#define clog_info_to(x,...)  clog_info_f(__FILE__, __FUNCTION__, __LINE__,x,__VA_ARGS__)
+#define clog_warn_to(x,...)  clog_warn_f(__FILE__, __FUNCTION__, __LINE__,x,__VA_ARGS__)
+#define clog_error_to(x,...) clog_error_f(__FILE__, __FUNCTION__, __LINE__,x,__VA_ARGS__)
+
+#define clog_debug(...) clog_debug_all_f(__FILE__, __FUNCTION__, __LINE__,__VA_ARGS__)
+#define clog_info(...)  clog_info_all_f(__FILE__, __FUNCTION__, __LINE__,__VA_ARGS__)
+#define clog_warn(...)  clog_warn_all_f(__FILE__, __FUNCTION__, __LINE__,__VA_ARGS__)
+#define clog_error(...) clog_error_all_f(__FILE__, __FUNCTION__, __LINE__,__VA_ARGS__)
 
 /**
  * Log functions (one per level).  Call these to write messages to the log
@@ -163,10 +174,15 @@ void clog_free(int id);
  * @param ...
  * Any additional format arguments.
  */
-void clog_debug(const char *sfile, int sline, int id, const char *fmt, ...);
-void clog_info(const char *sfile, int sline, int id, const char *fmt, ...);
-void clog_warn(const char *sfile, int sline, int id, const char *fmt, ...);
-void clog_error(const char *sfile, int sline, int id, const char *fmt, ...);
+void clog_debug_f(const char *sfile, const char *sfunc, int sline, int id, const char *fmt, ...);
+void clog_info_f(const char *sfile, const char *sfunc, int sline, int id, const char *fmt, ...);
+void clog_warn_f(const char *sfile, const char *sfunc, int sline, int id, const char *fmt, ...);
+void clog_error_f(const char *sfile, const char *sfunc, int sline, int id, const char *fmt, ...);
+
+void clog_debug_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...);
+void clog_info_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...);
+void clog_warn_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...);
+void clog_error_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...);
 
 /**
  * Set the minimum level of messages that should be written to the log.
@@ -213,11 +229,13 @@ int clog_set_date_fmt(int id, const char *fmt);
  * use:
  *
  *     %f: Source file name generating the log call.
+ *     %j: Function/method name where the log call was made.
  *     %n: Source line number where the log call was made.
  *     %m: The message text sent to the logger (after printf formatting).
  *     %d: The current date, formatted using the logger's date format.
  *     %t: The current time, formatted using the logger's time format.
  *     %l: The log level (one of "DEBUG", "INFO", "WARN", or "ERROR").
+ *     %s: Dynamic size alignment
  *     %%: A literal percent sign.
  *
  * The default format string is CLOG_DEFAULT_FORMAT.
@@ -269,6 +287,8 @@ struct clog {
 
     /* Tracks whether the fd needs to be closed eventually. */
     int opened;
+
+    size_t DynMaxSize;
 };
 
 void _clog_err(const char *fmt, ...);
@@ -283,8 +303,8 @@ extern struct clog *_clog_loggers[CLOG_MAX_LOGGERS];
 
 const char *const CLOG_LEVEL_NAMES[] = {
     "DEBUG",
-    "INFO",
-    "WARN",
+    "INFO ",
+    "WARN ",
     "ERROR",
 };
 
@@ -323,6 +343,7 @@ clog_init_fd(int id, int fd)
     logger->level = CLOG_DEBUG;
     logger->fd = fd;
     logger->opened = 0;
+    logger->DynMaxSize = 0;
     strcpy(logger->fmt, CLOG_DEFAULT_FORMAT);
     strcpy(logger->date_fmt, CLOG_DEFAULT_DATE_FORMAT);
     strcpy(logger->time_fmt, CLOG_DEFAULT_TIME_FORMAT);
@@ -406,6 +427,60 @@ clog_set_fmt(int id, const char *fmt)
 /* Internal functions */
 
 size_t
+_clog_pad(char **dst, char *orig_buf, size_t n, size_t cur_size)
+{
+    size_t i,curlen;
+    size_t new_size = cur_size;
+
+    while (strlen(*dst) + n >= new_size) {
+        new_size *= 2;
+    }
+    if (new_size != cur_size) {
+        if (*dst == orig_buf) {
+            *dst = (char *) malloc(new_size);
+            strcpy(*dst, orig_buf);
+        } else {
+            *dst = (char *) realloc(*dst, new_size);
+        }
+    }
+
+    curlen = strlen(*dst);
+    for(i=0; i<n; i++)
+    {
+        (*dst)[curlen] = ' ';
+        (*dst)[curlen+1] = 0;
+        curlen++;
+    }
+    return new_size;
+
+}
+
+size_t
+_clog_append_char(char **dst, char *orig_buf, const char c, size_t cur_size)
+{
+    size_t curlen;
+
+    size_t new_size = cur_size;
+
+    while (strlen(*dst) + sizeof(char) >= new_size) {
+        new_size *= 2;
+    }
+    if (new_size != cur_size) {
+        if (*dst == orig_buf) {
+            *dst = (char *) malloc(new_size);
+            strcpy(*dst, orig_buf);
+        } else {
+            *dst = (char *) realloc(*dst, new_size);
+        }
+    }
+
+    curlen = strlen(*dst);
+    (*dst)[curlen] = c;
+    (*dst)[curlen+1] = 0;
+    return new_size;
+}
+
+size_t
 _clog_append_str(char **dst, char *orig_buf, const char *src, size_t cur_size)
 {
     size_t new_size = cur_size;
@@ -467,8 +542,8 @@ _clog_basename(const char *path)
 }
 
 char *
-_clog_format(const struct clog *logger, char buf[], size_t buf_size,
-             const char *sfile, int sline, const char *level,
+_clog_format(struct clog *logger, char buf[], size_t buf_size,
+             const char *sfile, const char* sfunc, int sline, const char *level,
              const char *message)
 {
     size_t cur_size = buf_size;
@@ -478,6 +553,7 @@ _clog_format(const struct clog *logger, char buf[], size_t buf_size,
     size_t i;
     time_t t = time(NULL);
     struct tm *lt = localtime(&t);
+    size_t dynsize = 0;
 
     sfile = _clog_basename(sfile);
     result[0] = 0;
@@ -506,11 +582,28 @@ _clog_format(const struct clog *logger, char buf[], size_t buf_size,
                 case 'l':
                     cur_size = _clog_append_str(&result, buf, level, cur_size);
                     break;
+                case 'L':
+                    cur_size = _clog_append_char(&result, buf, level[0], cur_size);
+                    break;
                 case 'n':
                     cur_size = _clog_append_int(&result, buf, sline, cur_size);
                     break;
                 case 'f':
                     cur_size = _clog_append_str(&result, buf, sfile, cur_size);
+                    break;
+                case 'j':
+                    cur_size = _clog_append_str(&result, buf, sfunc, cur_size);
+                    break;
+                case 's':
+                    dynsize = strlen(result);
+                    if (dynsize > logger->DynMaxSize)
+                    {
+                        logger->DynMaxSize = dynsize;
+                    }
+                    else
+                    {
+                        cur_size = _clog_pad(&result, buf, logger->DynMaxSize - dynsize, cur_size);
+                    }
                     break;
                 case 'm':
                     cur_size = _clog_append_str(&result, buf, message,
@@ -525,7 +618,7 @@ _clog_format(const struct clog *logger, char buf[], size_t buf_size,
 }
 
 void
-_clog_log(const char *sfile, int sline, enum clog_level level,
+_clog_log(const char *sfile, const char *sfunc, int sline, enum clog_level level,
           int id, const char *fmt, va_list ap)
 {
     /* For speed: Use a stack buffer until message exceeds 4096, then switch
@@ -568,7 +661,7 @@ _clog_log(const char *sfile, int sline, enum clog_level level,
     /* Format according to log format and write to log */
     {
         char message_buf[4096];
-        message = _clog_format(logger, message_buf, 4096, sfile, sline,
+        message = _clog_format(logger, message_buf, 4096, sfile, sfunc, sline,
                                CLOG_LEVEL_NAMES[level], dynbuf);
         if (!message) {
             _clog_err("Formatting failed (2).\n");
@@ -591,38 +684,107 @@ _clog_log(const char *sfile, int sline, enum clog_level level,
 }
 
 void
-clog_debug(const char *sfile, int sline, int id, const char *fmt, ...)
+clog_debug_f(const char *sfile, const char* sfunc, int sline, int id, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    _clog_log(sfile, sline, CLOG_DEBUG, id, fmt, ap);
+    _clog_log(sfile, sfunc, sline, CLOG_DEBUG, id, fmt, ap);
     va_end(ap);
 }
 
 void
-clog_info(const char *sfile, int sline, int id, const char *fmt, ...)
+clog_info_f(const char *sfile, const char *sfunc, int sline, int id, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    _clog_log(sfile, sline, CLOG_INFO, id, fmt, ap);
+    _clog_log(sfile, sfunc, sline, CLOG_INFO, id, fmt, ap);
     va_end(ap);
 }
 
 void
-clog_warn(const char *sfile, int sline, int id, const char *fmt, ...)
+clog_warn_f(const char *sfile, const char *sfunc, int sline, int id, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    _clog_log(sfile, sline, CLOG_WARN, id, fmt, ap);
+    _clog_log(sfile, sfunc, sline, CLOG_WARN, id, fmt, ap);
     va_end(ap);
 }
 
 void
-clog_error(const char *sfile, int sline, int id, const char *fmt, ...)
+clog_error_f(const char *sfile, const char *sfunc, int sline, int id, const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    _clog_log(sfile, sline, CLOG_ERROR, id, fmt, ap);
+    _clog_log(sfile, sfunc, sline, CLOG_ERROR, id, fmt, ap);
+    va_end(ap);
+}
+
+void
+clog_debug_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...)
+{
+    int i;
+
+    va_list ap;
+    va_start(ap, fmt);
+
+    for(i=0; i<CLOG_MAX_LOGGERS; i++)
+    {
+        if (_clog_loggers[i] != NULL)
+        {
+            _clog_log(sfile, sfunc, sline, CLOG_DEBUG, i, fmt, ap);
+        }
+    }
+    va_end(ap);
+}
+
+void clog_info_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...)
+{
+    int i;
+
+    va_list ap;
+    va_start(ap, fmt);
+
+    for(i=0; i<CLOG_MAX_LOGGERS; i++)
+    {
+        if (_clog_loggers[i] != NULL)
+        {
+            _clog_log(sfile, sfunc, sline, CLOG_INFO, i, fmt, ap);
+        }
+    }
+    va_end(ap);
+}
+
+void clog_warn_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...)
+{
+    int i;
+
+    va_list ap;
+    va_start(ap, fmt);
+
+    for(i=0; i<CLOG_MAX_LOGGERS; i++)
+    {
+        if (_clog_loggers[i] != NULL)
+        {
+            _clog_log(sfile, sfunc, sline, CLOG_WARN, i, fmt, ap);
+        }
+    }
+    va_end(ap);
+}
+
+void clog_error_all_f(const char *sfile, const char *sfunc, int sline, const char *fmt, ...)
+{
+    int i;
+
+    va_list ap;
+    va_start(ap, fmt);
+
+    for(i=0; i<CLOG_MAX_LOGGERS; i++)
+    {
+        if (_clog_loggers[i] != NULL)
+        {
+            _clog_log(sfile, sfunc, sline, CLOG_ERROR, i, fmt, ap);
+        }
+    }
     va_end(ap);
 }
 
